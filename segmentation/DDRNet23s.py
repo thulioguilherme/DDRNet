@@ -20,10 +20,25 @@ class SequentialResidualBlock(nn.Module):
         super(SequentialResidualBlock, self).__init__()
 
         self.conv_layers = nn.Sequential(
-            nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False),
+            nn.Conv2d(
+                in_channels,
+                out_channels,
+                kernel_size=3,
+                stride=stride,
+                padding=1,
+                bias=False
+            ),
             nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False),
+            nn.ReLU(),
+
+            nn.Conv2d(
+                out_channels,
+                out_channels,
+                kernel_size=3,
+                stride=1,
+                padding=1,
+                bias=False
+            ),
             nn.BatchNorm2d(out_channels)
         )
 
@@ -537,7 +552,7 @@ if __name__ == '__main__':
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
     dummy_input = torch.randn(1, 3, 1024, 2048)
-    dummy_input = dummy_input.to(device)
+    # dummy_input = dummy_input.to(device)
 
     ddrnet23s = DDRNet23s(
         SequentialResidualBlock,
@@ -548,8 +563,8 @@ if __name__ == '__main__':
         head_channels=64
     )
 
-    ddrnet23s.eval()
-    ddrnet23s = ddrnet23s.to(device)
+    # ddrnet23s.eval()
+    # ddrnet23s = ddrnet23s.to(device)
 
     flops, params = profile(ddrnet23s, inputs=(dummy_input, ))
     flops, params = clever_format([flops, params], '%.3f')
