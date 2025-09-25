@@ -1,10 +1,12 @@
-from thop import profile, clever_format
+import os
+import sys
+
+from thop import clever_format, profile
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-import os, sys
 
 # #{ include this project packages
 
@@ -14,7 +16,8 @@ sys.path.append(project_root)
 
 # #}
 
-from models.DDRNetC23slim import Conv2dBNReLU, BasicResidual, BottleneckResidual, BilateralFusion
+from models.ddrnetc23slim import BasicResidual, BilateralFusion, BottleneckResidual, Conv2dBNReLU
+
 
 # #{ init_weights()
 
@@ -22,15 +25,15 @@ def init_weights(module):
     for m in module.named_children():
         if isinstance(m, nn.Conv2d):
             nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='relu')
-            if m.bias is not none:
+            if m.bias is not None:
                 nn.init.zeros_(m.bias)
             elif isinstance(m, (nn.BatchNorm2d, nn.InstanceNorm2d)):
                 nn.init.ones_(m.weight)
-                if m.bias is not none:
+                if m.bias is not None:
                     nn.init.zeros_(m.bias)
             elif isinstance(m, nn.Linear):
                 nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='relu')
-                if m.bias is not none:
+                if m.bias is not None:
                     nn.init.zeros_(m.bias)
             elif isinstance(m, (nn.Sequential,
                                 Conv2dBNReLU,
@@ -47,15 +50,17 @@ def init_weights(module):
 
 # #}
 
-# #{ load_backbone_weights()
 
-def load_backbone_weights(model, backbone_weights_path='ddrnetc23.pth'):
-    backbone_weights = torch.load(backbone_weights_path)
-    model.load_state_dict(backbone_weights, strict=False)
+# #{ load_weights()
+
+def load_weights(model, weights_path):
+    weights = torch.load(weights_path)
+    model.load_state_dict(weights, strict=False)
 
     return model
 
 # #}
+
 
 # #{ SegmentationHead
 
@@ -99,11 +104,13 @@ class SegmentationHead(nn.Module):
 
 # #}
 
+
 # #{ Deep Aggregation Pyramid Pooling (DAPPM)
 
 # NOTE: DAPPM is implemented with the sequence BN-ReLU-Conv
 
 class DAPPM(nn.Module):
+
     def __init__(self, in_channels, mid_channels, out_channels):
         super(DAPPM, self).__init__()
 
@@ -295,11 +302,20 @@ class DAPPM(nn.Module):
 
 # #}
 
+
 # #{ Deep Dual-Resolution Network (DDRNet) for semantic segmentation
 
 class DDRNetS23slim(nn.Module):
 
-    def __init__(self, num_channels=32, num_classes=19, dappm_channels=64, segmentation_channels=64, mode='train'):
+    def __init__(
+        self,
+        mode='train',
+        num_channels=32,
+        num_classes=19,
+        dappm_channels=64,
+        segmentation_channels=64
+    ):
+
         super(DDRNetS23slim, self).__init__()
 
         self.mode = mode
@@ -340,7 +356,11 @@ class DDRNetS23slim(nn.Module):
 
         self.stage_conv5_1_low_res = BasicResidual(num_channels * 4, num_channels * 8, stride=2)
         self.stage_conv5_1_high_res = BasicResidual(num_channels * 2, num_channels * 2)
-        self.stage_conv5_1_bilateral_fusion = BilateralFusion(num_channels * 8, num_channels * 2, ratio=4)
+        self.stage_conv5_1_bilateral_fusion = BilateralFusion(
+            num_channels * 8,
+            num_channels * 2,
+            ratio=4
+        )
         self.stage_conv5_1_low_bottleneck = BottleneckResidual(num_channels * 8, num_channels * 16)
         self.stage_conv5_1_high_bottleneck = BottleneckResidual(num_channels * 2, num_channels * 4)
 
@@ -388,6 +408,7 @@ class DDRNetS23slim(nn.Module):
 
         if self.mode == 'train':
             out_extra = self.extra_segmentation_head(out_h)
+            # print('out extra segmentation head', out_extra.size())
 
         out_l = self.stage_conv5_1_low_res(out_l)
         # print('stage conv5_1 low res', out_l.size())
@@ -430,16 +451,16 @@ class DDRNetS23slim(nn.Module):
         return out
 # #}
 
-if __name__=='__main__':
+
+if __name__ == '__main__':
 
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
-    ddrnets = DDRNetS23slim(num_classes=19)
-
-    # ddrnets = load_backbone_weights(ddrnets, '../train/ddrnetc.pth')
+    ddrnets23slim = DDRNetS23slim(num_classes=19)
+    init_weights(ddrnets23slim)
 
     dummy_input = torch.randn(1, 3, 1024, 2048)
-    flops, params = profile(ddrnets, inputs=(dummy_input, ))
+    flops, params = profile(ddrnets23slim, inputs=(dummy_input, ))
     flops, params = clever_format([flops, params], '%.3f')
     print(f'FLOPs: {flops}')
     print(f'Parameters: {params}')

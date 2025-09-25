@@ -1,7 +1,7 @@
 train:
-  batch_size: 12 # 12
+  batch_size: 4 # 12
 
-  num_epochs: 100 # 100
+  num_epochs: 1 # 100
 
   optimizer:
     name: 'SGD' # SGD

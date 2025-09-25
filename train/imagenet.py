@@ -16,6 +16,8 @@ import os
 import sys
 import yaml
 
+from pathlib import Path
+
 # #{ include this project packages
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -24,8 +26,7 @@ sys.path.append(project_root)
 
 # #}
 
-from models.DDRNetC23slim import DDRNetC23slim
-
+from models.ddrnetc23slim import DDRNetC23slim, init_weights
 
 # #{ read_config_file()
 
@@ -42,6 +43,7 @@ def read_config_file(file_path):
         return None
 
 # #}
+
 
 # #{ calculate_topk_accuracy()
 
@@ -62,6 +64,7 @@ def calculate_topk_accuracy(outputs, labels, topk=(1,)):
     return res
 
 # #}
+
 
 # #{ compute_top_accuracy()
 
@@ -86,12 +89,13 @@ def compute_top_accuracy(model, dataloader, device):
 
 # #}
 
+
 # #{ generate_model_filename()
 
 def generate_model_filename(model_name, top1_acc):
     current_datetime = datetime.datetime.now()
 
-    formatted_accuracy = f'{top1_acc:.1f}'.replace('.', '_')
+    formatted_accuracy = f'{top1_acc.item():.1f}'.replace('.', '_')
 
     datetime_str = current_datetime.strftime('%y-%m-%d_%H-%M-%S')
 
@@ -101,14 +105,15 @@ def generate_model_filename(model_name, top1_acc):
 
 # #}
 
-if __name__=='__main__':
+
+if __name__ == '__main__':
 
     configs = read_config_file('../configs/imagenet.yaml')['train']
 
     # #{ prepare Imagenet dataset
 
-    home_dir = os.path.expanduser('~')
-    data_dir = os.path.join(home_dir, '../app/data/imagenet-val')
+    home_path = Path().home()
+    data_dir = home_path / '../app/data/imagenet-val'
     print('Data directory:', data_dir)
 
     data_transforms = transforms.Compose([
@@ -135,14 +140,15 @@ if __name__=='__main__':
 
     # #}
 
-    ddrnetc = DDRNetC23slim(num_classes=1000)
+    ddrnetc23slim = DDRNetC23slim(num_classes=1000)
+    init_weights(ddrnetc23slim)
 
     criterion = CrossEntropyLoss()
 
     optimizer = None
     if configs['optimizer']['name'] == 'SGD':
         optimizer = optim.SGD(
-            ddrnetc.parameters(),
+            ddrnetc23slim.parameters(),
             lr=configs['optimizer']['learning_rate'],
             momentum=configs['optimizer']['momentum'],
             weight_decay=configs['optimizer']['weight_decay'],
@@ -152,21 +158,22 @@ if __name__=='__main__':
         print('Error: no valid optimizer')
         exit(1)
 
-    scheduler = optim.lr_scheduler.StepLR(
+    # learning rate reduced by 10 times at epochs 30, 60, and 90
+    scheduler = lr_scheduler.MultiStepLR(
         optimizer,
-        step_size=2,
-        gamma=0.94
+        milestones=[30, 60, 90],
+        gamma=0.1
     )
 
-    # Training
+    # training
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
-    ddrnetc = ddrnetc.to(device)
+    ddrnetc23slim = ddrnetc23slim.to(device)
 
     num_epochs = configs['num_epochs']
     for epoch in range(num_epochs):
         # Set model to training mode
-        ddrnetc.train()
+        ddrnetc23slim.train()
         running_loss = 0.0
 
         train_loader_tqdm = tqdm(train_loader, desc=f'Epoch {epoch+1}/{num_epochs}', unit='batch')
@@ -178,7 +185,7 @@ if __name__=='__main__':
             optimizer.zero_grad()
 
             with torch.set_grad_enabled(True):
-                outputs = ddrnetc(inputs)
+                outputs = ddrnetc23slim(inputs)
                 loss = criterion(outputs, labels)
                 loss.backward()
                 optimizer.step()
@@ -192,10 +199,10 @@ if __name__=='__main__':
 
     print('Training finished!')
 
-    top1_acc, top5_acc = compute_top_accuracy(ddrnetc, train_loader, device)
+    top1_acc, top5_acc = compute_top_accuracy(ddrnetc23slim, train_loader, device)
     print(f'Validation Top-1 Accuracy: {top1_acc.item():.2f}%')
     print(f'Validation Top-5 Accuracy: {top5_acc.item():.2f}%')
 
-    model_filename = generate_model_filename('ddrnetc', top1_acc)
-    torch.save(ddrnetc.state_dict(), model_filename)
+    model_filename = generate_model_filename('ddrnetc23slim', top1_acc)
+    torch.save(ddrnetc23slim.state_dict(), model_filename)
     print(f'Weights saved to {model_filename}!')

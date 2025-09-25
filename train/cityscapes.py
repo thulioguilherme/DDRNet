@@ -1,7 +1,6 @@
 import torch
 from torch.utils.data import DataLoader
 
-from torchvision.datasets import Cityscapes
 from torchvision import transforms
 
 from torch.nn import CrossEntropyLoss
@@ -16,6 +15,8 @@ import os
 import sys
 import yaml
 
+from pathlib import Path
+
 # #{ include this project packages
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -24,7 +25,9 @@ sys.path.append(project_root)
 
 # #}
 
-from models.DDRNetS23slim import DDRNetS23slim
+from models.ddrnets23slim import DDRNetS23slim, load_weights
+from utils.datasets.cityscapes import Cityscapes
+from utils.losses.ohem_loss import OhemCrossEntropyLoss
 
 
 # #{ read_config_file()
@@ -43,65 +46,54 @@ def read_config_file(file_path):
 
 # #}
 
+
 # #{ generate_model_filename()
 
-# def generate_model_filename(model_name, top1_acc):
+# def generate_model_filename(model_name, mean_iou):
 #     current_datetime = datetime.datetime.now()
 
 #     formatted_accuracy = f'{mIoU:.1f}'.replace('.', '_')
 
 #     datetime_str = current_datetime.strftime('%y-%m-%d_%H-%M-%S')
 
-#     filename = f'{model_name}_top1_acc_{formatted_accuracy}_{datetime_str}.pth'
+#     filename = f'{model_name}_miou_{formatted_accuracy}_{datetime_str}.pth'
 
 #     return filename
 
 # #}
 
-if __name__=='__main__':
+
+if __name__ == '__main__':
+
+    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
     configs = read_config_file('../configs/cityscapes.yaml')['train']
 
     # #{ prepare Cityspaces dataset
 
-    home_dir = os.path.expanduser('~')
-    data_dir = os.path.join(home_dir, '../app/data/cityscapes')
-    print('Data directory:', data_dir)
+    home_path = Path.home()
+    root_path = home_path / '../app/data/cityscapes'
 
-    data_transforms = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-    ])
-
-    train_dataset = Cityscapes(
-        root=root_dir,
-        split='train',
-        mode='fine',
-        target_type='semantic',
-        transform=transform,
-        target_transform=target_transform
-    )
+    train_dataset = Cityscapes(root=root_path, mode='train')
 
     train_loader = DataLoader(
         dataset=train_dataset,
         batch_size=configs['batch_size'],
         shuffle=True,
-        num_workers=4
+        num_workers=4,
+        drop_last=True
     )
-
-    num_classes = len(train_dataset.classes)
-    print(f'Number of classes in Cityscapes: {num_classes}')
 
     # #}
 
-    ddrnets = DDRNetS23slim(num_classes=19)
+    ddrnets23slim = DDRNetS23slim(num_classes=19)
 
-    criterion = CrossEntropyLoss()
+    criterion = OhemCrossEntropyLoss()
 
     optimizer = None
     if configs['optimizer']['name'] == 'SGD':
         optimizer = optim.SGD(
-            ddrnetc.parameters(),
+            ddrnets23slim.parameters(),
             lr=configs['optimizer']['learning_rate'],
             momentum=configs['optimizer']['momentum'],
             weight_decay=configs['optimizer']['weight_decay'],
@@ -117,15 +109,12 @@ if __name__=='__main__':
         gamma=0.94
     )
 
-    # Training
-    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-
-    ddrnets = ddrnets.to(device)
+    ddrnets23slim = ddrnets23slim.to(device)
 
     num_epochs = configs['num_epochs']
     for epoch in range(num_epochs):
         # Set model to training mode
-        ddrnets.train()
+        ddrnets23slim.train()
         running_loss = 0.0
 
         train_loader_tqdm = tqdm(train_loader, desc=f'Epoch {epoch+1}/{num_epochs}', unit='batch')
@@ -137,8 +126,10 @@ if __name__=='__main__':
             optimizer.zero_grad()
 
             with torch.set_grad_enabled(True):
-                outputs = ddrnetc(inputs)
-                loss = criterion(outputs, labels)
+                outputs = ddrnets23slim(inputs)
+                normal_loss = criterion(outputs[0], labels)
+                aux_loss = criterion(outputs[1], labels)
+                loss = normal_loss + 0.4 * aux_loss
                 loss.backward()
                 optimizer.step()
 
@@ -151,6 +142,6 @@ if __name__=='__main__':
 
     print('Training finished!')
 
-    model_filename = generate_model_filename('ddrnets', top1_acc)
-    torch.save(ddrnets.state_dict(), model_filename)
+    model_filename = 'ddrnets23slim_dummy.pth'
+    torch.save(ddrnets23slim.state_dict(), model_filename)
     print(f'Weights saved to {model_filename}!')

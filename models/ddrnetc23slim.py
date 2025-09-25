@@ -1,13 +1,44 @@
-from thop import profile, clever_format
+from thop import clever_format, profile
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 
+# #{ init_weights()
+
+def init_weights(module):
+    for m in module.named_children():
+        if isinstance(m, nn.Conv2d):
+            nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='relu')
+            if m.bias is not None:
+                nn.init.zeros_(m.bias)
+            elif isinstance(m, (nn.BatchNorm2d, nn.InstanceNorm2d)):
+                nn.init.ones_(m.weight)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, (nn.Sequential,
+                                Conv2dBNReLU,
+                                BasicResidual,
+                                BottleneckResidual,
+                                BilateralFusion)):
+                init_weights(m)
+            elif isinstance(m, (nn.ReLU, nn.ReLU6)):
+                pass
+            else:
+                pass
+
+# #}
+
+
 # #{ Conv2dBNReLU
 
 class Conv2dBNReLU(nn.Module):
+
     def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0,
                  dilation=1, groups=1, bias=False, norm_layer=nn.BatchNorm2d):
         super(Conv2dBNReLU, self).__init__()
@@ -34,6 +65,7 @@ class Conv2dBNReLU(nn.Module):
         return x
 
 # #}
+
 
 # #{ Basic Residual Block
 
@@ -97,6 +129,7 @@ class BasicResidual(nn.Module):
 
 # #}
 
+
 # #{ Bottleneck Residual Block
 
 class BottleneckResidual(nn.Module):
@@ -132,7 +165,6 @@ class BottleneckResidual(nn.Module):
         )
         self.bn2 = nn.BatchNorm2d(out_channels)
 
-
         self.shortcut = nn.Sequential()
         if stride != 1 or in_channels != out_channels:
             self.shortcut = nn.Sequential(
@@ -167,6 +199,7 @@ class BottleneckResidual(nn.Module):
             return self.relu(out)
 
 # #}
+
 
 # #{ Bilateral Fusion
 
@@ -232,6 +265,7 @@ class BilateralFusion(nn.Module):
 
 # #}
 
+
 # #{ Deep Dual-Resolution Network (DDRNet) for classification
 
 class DDRNetC23slim(nn.Module):
@@ -273,7 +307,11 @@ class DDRNetC23slim(nn.Module):
 
         self.stage_conv5_1_low_res = BasicResidual(num_channels * 4, num_channels * 8, stride=2)
         self.stage_conv5_1_high_res = BasicResidual(num_channels * 2, num_channels * 2)
-        self.stage_conv5_1_bilateral_fusion = BilateralFusion(num_channels * 8, num_channels * 2, ratio=4)
+        self.stage_conv5_1_bilateral_fusion = BilateralFusion(
+            num_channels * 8,
+            num_channels * 2,
+            ratio=4
+        )
         self.stage_conv5_1_low_bottleneck = BottleneckResidual(num_channels * 8, num_channels * 16)
         self.stage_conv5_1_high_bottleneck = BottleneckResidual(num_channels * 2, num_channels * 4)
 
@@ -302,7 +340,7 @@ class DDRNetC23slim(nn.Module):
             Conv2dBNReLU(
                 num_channels * 16,
                 num_channels * 32,
-                kernel_size = 1,
+                kernel_size=1,
                 stride=1,
                 padding=0,
                 bias=False
@@ -368,13 +406,16 @@ class DDRNetC23slim(nn.Module):
         return out
 # #}
 
-if __name__=='__main__':
+
+if __name__ == '__main__':
 
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
-    ddrnetc = DDRNetC23slim(num_classes=1000)
+    ddrnetc23slim = DDRNetC23slim(num_classes=1000)
+    init_weights(ddrnetc23slim)
+
     dummy_input = torch.randn(1, 3, 224, 224)
-    flops, params = profile(ddrnetc, inputs=(dummy_input, ))
+    flops, params = profile(ddrnetc23slim, inputs=(dummy_input, ))
     flops, params = clever_format([flops, params], '%.3f')
     print(f'FLOPs: {flops}')
     print(f'Parameters: {params}')
