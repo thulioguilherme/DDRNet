@@ -1,32 +1,34 @@
-import torch
-from torch.utils.data import DataLoader
-
-from torchvision.datasets import ImageFolder
-from torchvision import transforms
-
-from torch.nn import CrossEntropyLoss
-
-import torch.optim as optim
-from torch.optim import lr_scheduler
-
-from tqdm import tqdm
-
 import datetime
-import os
-import sys
-import yaml
 
 from pathlib import Path
 
+import sys
+
+import torch
+
+from torch.cuda.amp import autocast, GradScaler
+from torch.nn import CrossEntropyLoss
+import torch.optim as optim
+from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
+
+from torchvision import transforms
+from torchvision.datasets import ImageFolder
+
+from tqdm import tqdm
+
+import yaml
+
 # #{ include this project packages
 
-current_dir = os.path.dirname(os.path.abspath(__file__))
-project_root = os.path.join(current_dir, '..')
-sys.path.append(project_root)
+project_root = Path(__file__).resolve().parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
 
 # #}
 
 from models.ddrnetc23slim import DDRNetC23slim, init_weights
+
 
 # #{ read_config_file()
 
@@ -36,10 +38,10 @@ def read_config_file(file_path):
             yaml_content = yaml.safe_load(file)
             return yaml_content
     except FileNotFoundError:
-        print(f"Error: The file '{file_path}' was not found.")
+        print(f'Error: The file {file_path} was not found')
         return None
     except yaml.YAMLError as exc:
-        print(f"Error parsing YAML file: {exc}")
+        print(f'Error parsing YAML file: {exc}')
         return None
 
 # #}
@@ -92,12 +94,8 @@ def compute_top_accuracy(model, dataloader, device):
 
 # #{ generate_model_filename()
 
-def generate_model_filename(model_name, top1_acc):
-    current_datetime = datetime.datetime.now()
-
+def generate_model_filename(model_name, datetime_str, top1_acc):
     formatted_accuracy = f'{top1_acc.item():.1f}'.replace('.', '_')
-
-    datetime_str = current_datetime.strftime('%y-%m-%d_%H-%M-%S')
 
     filename = f'{model_name}_top1_acc_{formatted_accuracy}_{datetime_str}.pth'
 
@@ -106,41 +104,101 @@ def generate_model_filename(model_name, top1_acc):
 # #}
 
 
+# #{ get_datetime_as_string()
+
+def get_datetime_as_string():
+    current_datetime = datetime.datetime.now()
+
+    datetime_str = current_datetime.strftime('%Y%m%d_%H%M%S')
+
+    return datetime_str
+
+# #}
+
+
 if __name__ == '__main__':
 
-    configs = read_config_file('../configs/imagenet.yaml')['train']
+    # cleanup any residual memory from previous run
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
-    # #{ prepare Imagenet dataset
+    # allow CuDNN to auto-tune
+    torch.backends.cudnn.benchmark = True
+
+    scaler = GradScaler()
+
+    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+    print(f'Using {device} as device')
+
+    this_file_dir = Path(__file__).resolve().parent
+    configs = read_config_file(this_file_dir / '../configs/imagenet.yaml')['train']
 
     home_path = Path().home()
-    data_dir = home_path / '../app/data/imagenet-val'
-    print('Data directory:', data_dir)
+    train_dir = home_path / '../app/data/imagenet-train'
+    val_dir = home_path / '../app/data/imagenet-val'
 
-    data_transforms = transforms.Compose([
+    datetime_str = get_datetime_as_string()
+    log_dir = 'ddrnetc_' + datetime_str
+    writer = SummaryWriter(home_path / '../app/runs' / log_dir)
+
+    # #{ prepare Imagenet dataset loaders
+
+    train_transforms = transforms.Compose([
         transforms.RandomResizedCrop(224),
         transforms.RandomHorizontalFlip(),
         transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        transforms.Normalize(
+            mean=[0.485, 0.456, 0.406],
+            std=[0.229, 0.224, 0.225]
+        )
     ])
 
     train_dataset = ImageFolder(
-        root=data_dir,
-        transform=data_transforms
+        root=train_dir,
+        transform=train_transforms
     )
 
     train_loader = DataLoader(
         dataset=train_dataset,
-        batch_size=configs['batch_size'],
+        batch_size=configs['batch_size'] // configs['accumulation_steps'],
         shuffle=True,
-        num_workers=4
+        num_workers=8
     )
 
-    num_classes = len(train_dataset.classes)
-    print(f'Number of classes in ImageNet: {num_classes}')
+    train_num_images = len(train_dataset)
+    print(f'Number of images in train dataset: {train_num_images}')
+
+    val_transforms = transforms.Compose([
+        transforms.Resize(256),
+        transforms.CenterCrop(224),
+        transforms.ToTensor(),
+        transforms.Normalize(
+            mean=[0.485, 0.456, 0.406],
+            std=[0.229, 0.224, 0.225]
+        )
+    ])
+
+    val_dataset = ImageFolder(
+        root=val_dir,
+        transform=val_transforms
+    )
+
+    val_loader = DataLoader(
+        dataset=val_dataset,
+        batch_size=16,
+        shuffle=False,
+        num_workers=8
+    )
+
+    val_num_images = len(val_dataset)
+    print(f'Number of images in validation dataset: {val_num_images}')
 
     # #}
 
-    ddrnetc23slim = DDRNetC23slim(num_classes=1000)
+    num_classes = len(train_dataset.classes)
+    print(f'Number of classes: {num_classes}')
+
+    ddrnetc23slim = DDRNetC23slim(num_classes=num_classes)
     init_weights(ddrnetc23slim)
 
     criterion = CrossEntropyLoss()
@@ -159,50 +217,105 @@ if __name__ == '__main__':
         exit(1)
 
     # learning rate reduced by 10 times at epochs 30, 60, and 90
-    scheduler = lr_scheduler.MultiStepLR(
+    scheduler = optim.lr_scheduler.MultiStepLR(
         optimizer,
         milestones=[30, 60, 90],
         gamma=0.1
     )
 
-    # training
-    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-
     ddrnetc23slim = ddrnetc23slim.to(device)
 
     num_epochs = configs['num_epochs']
     for epoch in range(num_epochs):
-        # Set model to training mode
+
+        # #{ training loop
+
         ddrnetc23slim.train()
-        running_loss = 0.0
+        train_loss = 0.0
 
-        train_loader_tqdm = tqdm(train_loader, desc=f'Epoch {epoch+1}/{num_epochs}', unit='batch')
+        train_loader_tqdm = tqdm(
+            train_loader,
+            desc=f'(Train) Epoch {epoch+1}/{num_epochs}',
+            unit='batch'
+        )
 
-        for inputs, labels in train_loader_tqdm:
+        for i, (inputs, labels) in enumerate(train_loader_tqdm):
             inputs = inputs.to(device)
             labels = labels.to(device)
 
-            optimizer.zero_grad()
-
             with torch.set_grad_enabled(True):
-                outputs = ddrnetc23slim(inputs)
-                loss = criterion(outputs, labels)
-                loss.backward()
-                optimizer.step()
+                with autocast():
+                    outputs = ddrnetc23slim(inputs)
+                    loss = criterion(outputs, labels)
 
-            running_loss += loss.item() * inputs.size(0)
+                    if configs['accumulation_steps'] > 1:
+                        loss = loss / configs['accumulation_steps']
+
+                scaler.scale(loss).backward()
+
+                if (i + 1) % configs['accumulation_steps'] == 0:
+                    scaler.step(optimizer)
+                    scaler.update()
+
+                    optimizer.zero_grad()
+
+            train_loss += loss.item() * inputs.size(0) * configs['accumulation_steps']
 
         scheduler.step()
 
-        epoch_loss = running_loss / len(train_loader.dataset)
-        print('Epoch loss: {:.4f}'.format(epoch_loss))
+        train_epoch_loss = train_loss / len(train_loader.dataset)
+        print('  Loss: {:.4f}'.format(train_epoch_loss))
+
+        writer.add_scalar('Loss/train', train_epoch_loss, epoch + 1)
+
+        # #}
+
+        # #{ evaluation loop
+
+        ddrnetc23slim.eval()
+        val_loss = 0.0
+
+        val_loader_tqdm = tqdm(
+            val_loader,
+            desc=f'(Val) Epoch {epoch+1}/{num_epochs}',
+            unit='batch'
+        )
+
+        with torch.no_grad():
+            for inputs, labels in val_loader_tqdm:
+                inputs = inputs.to(device)
+                labels = labels.to(device)
+
+                outputs = ddrnetc23slim(inputs)
+                loss = criterion(outputs, labels)
+
+                val_loss += loss.item() * inputs.size(0)
+
+        val_loss_epoch = val_loss / len(val_loader.dataset)
+        print('  Loss: {:.4f}'.format(val_loss_epoch))
+
+        writer.add_scalar('Loss/val', val_loss_epoch, epoch + 1)
+
+        # #}
+
+        # cleanup any residual memory after each epoch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     print('Training finished!')
 
-    top1_acc, top5_acc = compute_top_accuracy(ddrnetc23slim, train_loader, device)
+    top1_acc, top5_acc = compute_top_accuracy(ddrnetc23slim, val_loader, device)
     print(f'Validation Top-1 Accuracy: {top1_acc.item():.2f}%')
     print(f'Validation Top-5 Accuracy: {top5_acc.item():.2f}%')
 
-    model_filename = generate_model_filename('ddrnetc23slim', top1_acc)
-    torch.save(ddrnetc23slim.state_dict(), model_filename)
+    model_filename = generate_model_filename('ddrnetc23slim', datetime_str, top1_acc)
+    torch.save(ddrnetc23slim.state_dict(), this_file_dir / model_filename)
     print(f'Weights saved to {model_filename}!')
+
+    writer.close()
+
+    # final cleanup before exiting
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    sys.exit(0)

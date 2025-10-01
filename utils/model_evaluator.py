@@ -2,23 +2,21 @@ import numpy as np
 
 from pathlib import Path
 
-import os, sys
+import sys
 
 import torch
-
 from torch.utils.data import DataLoader
-
 
 # #{ include this project packages
 
-current_dir = os.path.dirname(os.path.abspath(__file__))
-project_root = os.path.join(current_dir, '..')
-sys.path.append(project_root)
+project_root = Path(__file__).resolve().parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
 
 # #}
 
-from models.ddrnets23slim import DDRNetS23slim, load_weights
-from datasets.cityscapes import Cityscapes
+from models.ddrnets23slim import DDRNetS23slim
+from utils.datasets.cityscapes import Cityscapes
 
 class_id_mapping = [7, 8, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27]
 
@@ -26,15 +24,16 @@ class_id_mapping = [7, 8, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24
 
 class ModelEvaluator(object):
 
-    def __init__(self, device=None, ignore_label=255):
+    def __init__(self, num_classes, device, ignore_label=255):
+        self.num_classes = num_classes
         self.device = device
         self.ignore_label = ignore_label
 
-    def __call__(self, model, dataset_loader, num_classes):
-        # Set model to evaluation mode
+    def __call__(self, model, dataset_loader):
+        # set model to evaluation mode
         model.eval()
 
-        hist = torch.zeros(num_classes, num_classes).to(self.device).detach()
+        hist = torch.zeros(self.num_classes, self.num_classes).to(self.device).detach()
 
         with torch.no_grad():
             for i, (images, labels) in enumerate(dataset_loader):
@@ -46,14 +45,18 @@ class ModelEvaluator(object):
 
                 probs = model(images)
 
-                probs = torch.softmax(probs, dim=1)
+                if isinstance(probs, list):
+                    probs = torch.softmax(probs[0], dim=1) # ignore auxiliary loss
+                else:
+                    probs = torch.softmax(probs, dim=1)
+
                 preds = torch.argmax(probs, dim=1)
 
                 keep = labels != self.ignore_label
                 hist += torch.bincount(
-                    labels[keep] * num_classes + preds[keep],
-                    minlength=num_classes ** 2
-                    ).view(num_classes, num_classes).float()
+                    labels[keep] * self.num_classes + preds[keep],
+                    minlength=self.num_classes ** 2
+                    ).view(self.num_classes, self.num_classes).float()
 
         ious = hist.diag() / (hist.sum(dim=0) + hist.sum(dim=1) - hist.diag())
 
@@ -80,26 +83,23 @@ if __name__ == '__main__':
 
     home_path = Path.home()
     data_path = home_path / '../app/data/cityscapes'
-    model_weights_path = Path('../train/ddrnets23slim_dummy.pth')
 
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+    print(f'Using {device} as device')
 
-    ddrnets23slim = DDRNetS23slim(num_classes=19, mode='val')
-    ddrnets23slim = load_weights(ddrnets23slim, model_weights_path, is_backbone_weights=False)
+    ddrnets23slim = DDRNetS23slim(num_classes=19, mode='train')
     ddrnets23slim = ddrnets23slim.to(device)
 
-    val_dataset = Cityscapes(root=data_path, mode='val')
+    val_dataset = Cityscapes(root=data_path, partition='val')
 
     val_loader = DataLoader(
         dataset=val_dataset,
-        batch_size=2,
-        shuffle=True,
-        num_workers=4,
+        batch_size=4,
+        shuffle=False,
+        num_workers=8,
         drop_last=True
     )
 
-    model_evaluator = ModelEvaluator(device=device)
-
-    res = model_evaluator(ddrnets23slim, val_loader, num_classes=19)
+    model_evaluator = ModelEvaluator(num_classes=19, device=device)
+    res = model_evaluator(ddrnets23slim, val_loader)
     print('Mean IoU:', res['mean_iou'])
-    print('IoU per class:', res['per_class_iou'])

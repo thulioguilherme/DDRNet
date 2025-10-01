@@ -1,7 +1,11 @@
 train:
-  batch_size: 128 # 256
+  drop_last: True
 
-  num_epochs: 100 # 100
+  accumulation_steps: 4
+
+  batch_size: 256 # 256
+
+  num_epochs: 10 # 100
 
   optimizer:
     name: 'SGD' # SGD

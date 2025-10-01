@@ -1,16 +1,15 @@
 import numpy as np
 
+from pathlib import Path
+
+from PIL import Image
+
 import torch
 
 from torch.utils.data import Dataset
 
 import torchvision.transforms as transforms
 import torchvision.transforms.functional as functional
-
-from PIL import Image
-import os
-
-from pathlib import Path
 
 # train_dirs = [
 #     'jena/',
@@ -105,8 +104,8 @@ class DataTransformer:
     #   - random cropping images (1024 x 1024);
     #   - random scaling in the range of 0.5 to 2.0;
     #   - random horizontal flipping.
-    def __init__(self, mode, new_size, scale=(0.5, 2.0), horizontal_flip_probability=0.5):
-        self.mode = mode
+    def __init__(self, partition, new_size, scale=(0.5, 2.0), horizontal_flip_probability=0.5):
+        self.partition = partition
         self.new_size = new_size
 
         self.transform_normalize = transforms.Normalize(
@@ -114,15 +113,14 @@ class DataTransformer:
             (0.18696375, 0.19017339, 0.18725835)
         )
 
-        if mode == 'train':
+        if self.partition == 'train':
             self.horizontal_flip_probability = horizontal_flip_probability
             self.transform_random_resized_crop = transforms.RandomResizedCrop(size=new_size, scale=scale)
-        elif mode == 'val' or mode == 'test':
+        else:
             self.transform_random_crop = transforms.RandomCrop(new_size)
 
-
     def __call__(self, image, mask):
-        if self.mode == 'train':
+        if self.partition == 'train':
             i, j, h, w = self.transform_random_resized_crop.get_params(
                 image,
                 scale=self.transform_random_resized_crop.scale,
@@ -164,42 +162,24 @@ class DataTransformer:
 
 class Cityscapes(Dataset):
 
-    def __init__(self, root, mode='train'):
-        assert mode in ('train', 'val', 'test')
+    def __init__(self, root, partition='train'):
+        assert partition in ('train', 'val', 'test')
 
-        # TODO: validate if it is already a Path
         self.root_path = Path(root)
-        self.mode = mode
-        self.images_dir_path = self.root_path / 'leftImg8bit' / self.mode
-        self.masks_dir_path = self.root_path / 'gtFine' / self.mode
+        self.partition = partition
+        self.images_dir_path = self.root_path / 'leftImg8bit' / self.partition
+        self.masks_dir_path = self.root_path / 'gtFine' / self.partition
 
-        if mode == 'train':
+        if self.partition == 'train':
             self.cities_dirs = train_dirs
-        elif mode == 'val':
+        elif self.partition == 'val':
             self.cities_dirs = val_dirs
         else:
             self.cities_dirs = test_dirs
 
         self.dataset = []
 
-        self.data_transformer = DataTransformer(mode=mode, new_size=(1024, 1024))
-
-        # if self.mode == 'train':
-        #     self.transform = transforms.Compose([
-        #         transforms.RandomResizedCrop(size=self.new_size, scale=(0.5, 2.0)),
-        #         transforms.RandomHorizontalFlip(),
-        #     ])
-        # else:
-        #     self.transform = transforms.Compose([
-        #         transforms.RandomResizedCrop(size=self.new_size),
-        #     ])
-
-        # self.image_transform = transforms.Compose([
-        #     transforms.ToTensor(),
-        #     transforms.Normalize(
-        #         (0.485, 0.456, 0.406), (0.229, 0.224, 0.225)
-        #     )
-        # ])
+        self.data_transformer = DataTransformer(partition=self.partition, new_size=(1024, 1024))
 
         for city_dir in self.cities_dirs:
             city_dir_path = self.images_dir_path / city_dir
@@ -212,19 +192,12 @@ class Cityscapes(Dataset):
 
                 data = {}
                 data['image_path'] = image_path
-                # print('Image path:', image_path)
-
                 data['mask_path'] = mask_path
-                # print('Mask path:', mask_path)
-
                 data['image_id'] = image_id
-                # print('Image ID:', image_id)
 
                 self.dataset.append(data)
 
         self.num_samples = len(self.dataset)
-
-        # print(self.dataset[0])
 
 
     def __getitem__(self, index):
@@ -240,6 +213,7 @@ class Cityscapes(Dataset):
 
         mask = np.array(mask, dtype=np.int64)
         mask = self.convert_mask(mask)
+        mask = torch.from_numpy(mask).long()
 
         return (image, mask)
 
@@ -257,6 +231,9 @@ class Cityscapes(Dataset):
 
 if __name__ == '__main__':
 
-    home_path = os.path.expanduser('~')
-    root_path = os.path.join(home_path, '../app/data/cityscapes')
-    train_dataset = Cityscapes(root=root_path, mode='train')
+    home_path = Path.home()
+    root_path = home_path / '../app/data/cityscapes'
+    train_dataset = Cityscapes(root=root_path, partition='train')
+
+    num_images = len(train_dataset)
+    print(f'Number of images: {num_images}')

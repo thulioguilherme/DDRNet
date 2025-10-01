@@ -1,4 +1,5 @@
-import os
+from pathlib import Path
+
 import sys
 
 from thop import clever_format, profile
@@ -7,16 +8,15 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-
 # #{ include this project packages
 
-current_dir = os.path.dirname(os.path.abspath(__file__))
-project_root = os.path.join(current_dir, '..')
-sys.path.append(project_root)
+project_root = Path(__file__).resolve().parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
 
 # #}
 
-from models.ddrnetc23slim import BasicResidual, BilateralFusion, BottleneckResidual, Conv2dBNReLU
+from models.ddrnetc23slim import Conv2dBNReLU, BasicResidual, BilateralFusion, BottleneckResidual
 
 
 # #{ init_weights()
@@ -309,15 +309,16 @@ class DDRNetS23slim(nn.Module):
 
     def __init__(
         self,
+        num_classes=19,
         mode='train',
         num_channels=32,
-        num_classes=19,
         dappm_channels=64,
         segmentation_channels=64
     ):
 
         super(DDRNetS23slim, self).__init__()
 
+        assert mode in ('train', 'eval')
         self.mode = mode
 
         # #{ Backbone
@@ -449,12 +450,14 @@ class DDRNetS23slim(nn.Module):
             out = [out, out_extra]
 
         return out
+
 # #}
 
 
 if __name__ == '__main__':
 
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+    print(f'Using {device} as device')
 
     ddrnets23slim = DDRNetS23slim(num_classes=19)
     init_weights(ddrnets23slim)
@@ -464,3 +467,8 @@ if __name__ == '__main__':
     flops, params = clever_format([flops, params], '%.3f')
     print(f'FLOPs: {flops}')
     print(f'Parameters: {params}')
+
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    sys.exit(0)

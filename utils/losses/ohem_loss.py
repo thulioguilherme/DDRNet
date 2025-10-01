@@ -3,9 +3,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-# #{ OhemCrossEntropyLoss
-
 class OhemCrossEntropyLoss(nn.Module):
+
     def __init__(self, ignore_index=255, threshold=0.7, min_kept=100000):
         super(OhemCrossEntropyLoss, self).__init__()
         self.ignore_index = ignore_index
@@ -14,21 +13,22 @@ class OhemCrossEntropyLoss(nn.Module):
         self.criterion = nn.CrossEntropyLoss(ignore_index=ignore_index, reduction='none')
 
     def forward(self, pred, target):
-        pixel_loss = self.criterion(pred, target)
+        pixel_loss = self.criterion(pred, target).view(-1)
 
-        pixel_loss = pixel_loss.contiguous().view(-1)
-
-        valid_mask = (target != self.ignore_index).view(-1)
+        valid_mask = (target.view(-1) != self.ignore_index)
         valid_loss = pixel_loss[valid_mask]
 
-        if valid_loss.numel() > self.min_kept:
-            hard_loss, _ = torch.topk(valid_loss, k=self.min_kept, largest=True)
-            loss = torch.mean(hard_loss)
-        elif valid_loss.numel() > 0:
-            loss = torch.mean(valid_loss)
+        if valid_loss.numel() == 0:
+            return torch.tensor(0.0).to(pred.device)
+
+        hard_pixels_mask = valid_loss > self.threshold
+
+        if torch.sum(hard_pixels_mask) < self.min_kept:
+            k = min(self.min_kept, valid_loss.numel())
+            hard_loss, _ = torch.topk(valid_loss, k=k, largest=True)
         else:
-            loss = torch.tensor(0.0).to(pred.device) # No valid pixels to train on
+            hard_loss = valid_loss[hard_pixels_mask]
+
+        loss = torch.mean(hard_loss)
 
         return loss
-
-# #}

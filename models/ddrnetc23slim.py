@@ -1,3 +1,5 @@
+import sys
+
 from thop import clever_format, profile
 
 import torch
@@ -410,6 +412,7 @@ class DDRNetC23slim(nn.Module):
 if __name__ == '__main__':
 
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+    print(f'Using {device} as device')
 
     ddrnetc23slim = DDRNetC23slim(num_classes=1000)
     init_weights(ddrnetc23slim)
@@ -419,3 +422,8 @@ if __name__ == '__main__':
     flops, params = clever_format([flops, params], '%.3f')
     print(f'FLOPs: {flops}')
     print(f'Parameters: {params}')
+
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    sys.exit(0)
